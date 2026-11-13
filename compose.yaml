@@ -1,0 +1,105 @@
+﻿name: helpdisk
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile_inline: |
+        FROM composer:2 AS composer
+        FROM php:8.5-cli-bookworm
+        RUN apt-get update && apt-get install -y --no-install-recommends git unzip libpq-dev libonig-dev libxml2-dev \
+            && docker-php-ext-install -j"$(nproc)" pdo_pgsql pcntl \
+            && pecl install redis-6.3.0 && docker-php-ext-enable redis \
+            && rm -rf /var/lib/apt/lists/*
+        COPY --from=composer /usr/bin/composer /usr/bin/composer
+        WORKDIR /app
+        ENV COMPOSER_ALLOW_SUPERUSER=1
+        COPY composer.json composer.lock ./
+        RUN composer install --no-interaction --prefer-dist --no-scripts --no-autoloader
+        COPY artisan ./
+        COPY app ./app
+        COPY bootstrap/app.php bootstrap/providers.php ./bootstrap/
+        COPY config ./config
+        COPY database/migrations ./database/migrations
+        COPY database/factories ./database/factories
+        COPY database/seeders ./database/seeders
+        COPY public ./public
+        COPY resources ./resources
+        COPY routes ./routes
+        COPY tests ./tests
+        COPY phpunit.xml ./
+        RUN mkdir -p bootstrap/cache storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs \
+            && composer dump-autoload --no-interaction
+    env_file: ./backend/.env
+    environment:
+      APP_ENV: local
+      APP_URL: http://localhost:8000
+      DB_CONNECTION: pgsql
+      DB_URL: ""
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: helpdisk
+      DB_USERNAME: helpdisk
+      DB_PASSWORD: helpdisk_local
+      REDIS_CLIENT: phpredis
+      REDIS_URL: ""
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: "null"
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+    command: ["sh", "-ec", "php artisan migrate --force && exec php artisan serve --host=0.0.0.0 --port=8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile_inline: |
+        FROM node:24-bookworm-slim
+        WORKDIR /app
+        COPY package.json package-lock.json ./
+        RUN npm ci
+        COPY index.html vite.config.ts tsconfig*.json ./
+        COPY public ./public
+        COPY src ./src
+        RUN npm run build
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
+    ports:
+      - "127.0.0.1:5173:5173"
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: helpdisk
+      POSTGRES_USER: helpdisk
+      POSTGRES_PASSWORD: helpdisk_local
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "helpdisk", "-d", "helpdisk"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres_data:
+  redis_data:
+
